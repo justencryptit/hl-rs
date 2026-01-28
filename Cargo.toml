@@ -13,6 +13,7 @@ categories = ["api-bindings"]
 [features]
 default = []
 custom-signing-chain = []
+integration-tests = []
 
 [dependencies]
 alloy = "1.1.1"

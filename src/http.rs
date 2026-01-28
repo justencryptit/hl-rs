@@ -1,7 +1,7 @@
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::{prelude::Result, BaseUrl, Error};
+use crate::{prelude::Result, Error};
 
 #[derive(Deserialize, Debug)]
 struct ErrorData {
@@ -73,9 +73,5 @@ impl HttpClient {
             .map_err(|e| Error::GenericRequest(e.to_string()))?;
         tracing::trace!(target: "hl_rs::http_client", res=?res, "Raw Response");
         parse_response(res).await
-    }
-
-    pub fn is_mainnet(&self) -> bool {
-        self.base_url == BaseUrl::Mainnet.get_url()
     }
 }

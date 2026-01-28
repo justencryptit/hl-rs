@@ -1,275 +1,323 @@
+use std::collections::HashMap;
+
 use proc_macro::TokenStream;
 
-use heck::ToLowerCamelCase;
+use heck::{ToLowerCamelCase, ToSnakeCase};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput, LitStr};
 
-use crate::{ensure_named_fields, parse_action_attrs};
+use crate::{ensure_named_fields, parse_action_attrs, ActionAttrs};
 
-fn build_user_signed_match_arms(
+/// Field metadata for code generation.
+struct FieldInfo {
+    ident: syn::Ident,
+    is_option: bool,
+}
+
+/// Look up a field by name, trying both the original camelCase name and its snake_case equivalent.
+fn lookup_field<'a>(
+    field_map: &'a HashMap<String, FieldInfo>,
+    name: &str,
+) -> Option<&'a FieldInfo> {
+    // Try exact match first
+    if let Some(field) = field_map.get(name) {
+        return Some(field);
+    }
+    // Try snake_case version of the name
+    let snake_name = name.to_snake_case();
+    field_map.get(&snake_name)
+}
+
+/// Build a map of field names to their metadata.
+fn build_field_map(
     fields: &syn::FieldsNamed,
-) -> Result<(Vec<TokenStream2>, bool), syn::Error> {
-    let mut match_arms = Vec::new();
+) -> Result<(HashMap<String, FieldInfo>, bool), syn::Error> {
+    let mut field_map = HashMap::new();
     let mut has_nonce = false;
 
     for field in fields.named.iter() {
-        let Some(name) = field.ident.as_ref() else { continue };
+        let Some(name) = field.ident.as_ref() else {
+            continue;
+        };
         let name_str = name.to_string();
 
-        if name_str == "nonce" {
-            has_nonce = true;
-            let ty_str = quote! { #field.ty }.to_string();
-            let expr = if ty_str.contains("Option") {
-                quote! {
-                    let nonce = self.#name.expect("nonce must be set before signing");
-                    match parsed_ty {
-                        alloy::dyn_abi::DynSolType::Uint(size) => values.push(
-                            alloy::dyn_abi::DynSolValue::Uint(
-                                alloy::primitives::U256::from(nonce),
-                                size,
-                            ),
-                        ),
-                        _ => panic!("nonce must map to uint type"),
-                    }
-                }
-            } else {
-                quote! {
-                    match parsed_ty {
-                        alloy::dyn_abi::DynSolType::Uint(size) => values.push(
-                            alloy::dyn_abi::DynSolValue::Uint(
-                                alloy::primitives::U256::from(self.#name),
-                                size,
-                            ),
-                        ),
-                        _ => panic!("nonce must map to uint type"),
-                    }
-                }
-            };
-            match_arms.push(quote! { #name_str => { #expr } });
-            continue;
-        }
-
         if name_str == "hyperliquid_chain" || name_str == "hyperliquidChain" {
-            // handled explicitly in the type preimage loop
             continue;
         }
 
         let ty_str = quote! { #field.ty }.to_string();
-        if ty_str.contains("Address") {
-            let expr = quote! {
-                match parsed_ty {
-                    alloy::dyn_abi::DynSolType::Address | alloy::dyn_abi::DynSolType::String => values.push(
-                        alloy::dyn_abi::DynSolValue::FixedBytes(
-                            alloy::primitives::keccak256(self.#name.to_string().to_lowercase()),
-                            32,
-                        ),
-                    ),
-                    _ => panic!("address field must map to address or string type"),
+        let is_option = ty_str.contains("Option");
+
+        if name_str == "nonce" {
+            has_nonce = true;
+        }
+
+        field_map.insert(
+            name_str,
+            FieldInfo {
+                ident: name.clone(),
+                is_option,
+            },
+        );
+    }
+
+    Ok((field_map, has_nonce))
+}
+
+/// Convert an EIP-712 type string (e.g., "string", "uint64", "address") to a DynSolType token.
+fn eip712_type_to_dyn_sol_type(ty: &str) -> TokenStream2 {
+    let ty_lower = ty.to_lowercase();
+
+    if ty_lower == "string" {
+        quote! { alloy::dyn_abi::DynSolType::String }
+    } else if ty_lower == "address" {
+        quote! { alloy::dyn_abi::DynSolType::Address }
+    } else if ty_lower == "bool" {
+        quote! { alloy::dyn_abi::DynSolType::Bool }
+    } else if ty_lower == "bytes" {
+        quote! { alloy::dyn_abi::DynSolType::Bytes }
+    } else if ty_lower.starts_with("uint") {
+        let size: usize = ty_lower
+            .strip_prefix("uint")
+            .and_then(|s| {
+                if s.is_empty() {
+                    Some(256)
+                } else {
+                    s.parse().ok()
+                }
+            })
+            .unwrap_or(256);
+        quote! { alloy::dyn_abi::DynSolType::Uint(#size) }
+    } else if ty_lower.starts_with("int") {
+        let size: usize = ty_lower
+            .strip_prefix("int")
+            .and_then(|s| {
+                if s.is_empty() {
+                    Some(256)
+                } else {
+                    s.parse().ok()
+                }
+            })
+            .unwrap_or(256);
+        quote! { alloy::dyn_abi::DynSolType::Int(#size) }
+    } else if ty_lower.starts_with("bytes") {
+        let size: usize = ty_lower
+            .strip_prefix("bytes")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(32);
+        quote! { alloy::dyn_abi::DynSolType::FixedBytes(#size) }
+    } else {
+        // Default to string for unknown types
+        quote! { alloy::dyn_abi::DynSolType::String }
+    }
+}
+
+fn build_struct_hash_tokens(
+    fields: &syn::FieldsNamed,
+    full_types_preimage: &str,
+) -> Result<(Vec<TokenStream2>, bool), syn::Error> {
+    let (field_map, has_nonce) = build_field_map(fields)?;
+
+    let params = parse_types_params(full_types_preimage)?;
+    let mut tokens = Vec::with_capacity(params.len() + 1);
+    tokens.push(quote! {
+        alloy::dyn_abi::DynSolValue::FixedBytes(type_hash, 32)
+    });
+
+    for (ty, name) in params {
+        let dyn_sol_type = eip712_type_to_dyn_sol_type(&ty);
+
+        // Special case: hyperliquidChain comes from the signing chain, not a field
+        if name == "hyperliquidChain" {
+            tokens.push(quote! {
+                chain.get_hyperliquid_chain().to_abi_value(&#dyn_sol_type)?
+            });
+            continue;
+        }
+
+        // Special case: nonce/time field - must unwrap Option<u64>
+        if name == "nonce" || name == "time" {
+            let field = field_map.get("nonce").ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "nonce field missing")
+            })?;
+            let ident = &field.ident;
+            let expr = if field.is_option {
+                quote! {
+                    {
+                        let nonce = self.#ident.ok_or(crate::Error::GenericParse("nonce must be set before signing".to_string()))?;
+                        nonce.to_abi_value(&#dyn_sol_type)?
+                    }
+                }
+            } else {
+                quote! {
+                    self.#ident.to_abi_value(&#dyn_sol_type)?
                 }
             };
-            match_arms.push(quote! { #name_str => { #expr } });
-        } else if ty_str.contains("String") || ty_str.contains("str") {
-            let expr = quote! {
-                match parsed_ty {
-                    alloy::dyn_abi::DynSolType::String => values.push(
-                        alloy::dyn_abi::DynSolValue::FixedBytes(
-                            alloy::primitives::keccak256(&self.#name),
-                            32,
+            tokens.push(expr);
+            continue;
+        }
+
+        // Regular field - use ToAbiValue trait
+        let field = lookup_field(&field_map, &name).ok_or_else(|| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "field not found: {name} (tried snake_case: {})",
+                    name.to_snake_case()
+                ),
+            )
+        })?;
+
+        let ident = &field.ident;
+        tokens.push(quote! {
+            self.#ident.to_abi_value(&#dyn_sol_type)?
+        });
+    }
+
+    Ok((tokens, has_nonce))
+}
+
+fn build_multisig_hash_tokens(
+    fields: &syn::FieldsNamed,
+    multisig_types_preimage: &str,
+    multisig_types_lit: &syn::LitStr,
+) -> Result<Vec<TokenStream2>, syn::Error> {
+    let (field_map, _has_nonce) = build_field_map(fields)?;
+    let params = parse_types_params(multisig_types_preimage)?;
+    let mut tokens = Vec::with_capacity(params.len() + 1);
+
+    tokens.push(quote! {
+        alloy::dyn_abi::DynSolValue::FixedBytes(
+            alloy::primitives::keccak256(#multisig_types_lit.as_bytes()),
+            32,
+        )
+    });
+
+    for (ty, name) in params {
+        let dyn_sol_type = eip712_type_to_dyn_sol_type(&ty);
+
+        match name.as_str() {
+            // Special case: hyperliquidChain comes from meta.signing_chain
+            "hyperliquidChain" => {
+                tokens.push(quote! {
+                    meta.signing_chain.get_hyperliquid_chain().to_abi_value(&#dyn_sol_type)?
+                });
+            }
+            // Special case: payloadMultiSigUser is a function parameter
+            "payloadMultiSigUser" => {
+                tokens.push(quote! {
+                    payload_multi_sig_user.to_abi_value(&#dyn_sol_type)?
+                });
+            }
+            // Special case: outerSigner is a function parameter
+            "outerSigner" => {
+                tokens.push(quote! {
+                    outer_signer.to_abi_value(&#dyn_sol_type)?
+                });
+            }
+            // Special case: nonce/time field - must unwrap Option<u64>
+            "nonce" | "time" => {
+                let field = field_map.get("nonce").ok_or_else(|| {
+                    syn::Error::new(proc_macro2::Span::call_site(), "nonce field missing")
+                })?;
+                let ident = &field.ident;
+                let expr = if field.is_option {
+                    quote! {
+                        {
+                            let nonce = self.#ident.ok_or(crate::Error::GenericParse("nonce must be set before signing".to_string()))?;
+                            nonce.to_abi_value(&#dyn_sol_type)?
+                        }
+                    }
+                } else {
+                    quote! {
+                        self.#ident.to_abi_value(&#dyn_sol_type)?
+                    }
+                };
+                tokens.push(expr);
+            }
+            // Regular field - use ToAbiValue trait
+            _ => {
+                let field = lookup_field(&field_map, &name).ok_or_else(|| {
+                    syn::Error::new(
+                        proc_macro2::Span::call_site(),
+                        format!(
+                            "field not found: {name} (tried snake_case: {})",
+                            name.to_snake_case()
                         ),
-                    ),
-                    _ => panic!("string field must map to string type"),
-                }
-            };
-            match_arms.push(quote! { #name_str => { #expr } });
-        } else if ty_str.contains("Decimal") {
-            let expr = quote! {
-                match parsed_ty {
-                    alloy::dyn_abi::DynSolType::String => values.push(
-                        alloy::dyn_abi::DynSolValue::FixedBytes(
-                            alloy::primitives::keccak256(self.#name.to_string()),
-                            32,
-                        ),
-                    ),
-                    _ => panic!("decimal field must map to string type"),
-                }
-            };
-            match_arms.push(quote! { #name_str => { #expr } });
-        } else {
-            let expr = quote! {
-                match parsed_ty {
-                    alloy::dyn_abi::DynSolType::Uint(size) => values.push(
-                        alloy::dyn_abi::DynSolValue::Uint(
-                            alloy::primitives::U256::from(self.#name),
-                            size,
-                        ),
-                    ),
-                    _ => panic!("numeric field must map to uint type"),
-                }
-            };
-            match_arms.push(quote! { #name_str => { #expr } });
+                    )
+                })?;
+                let ident = &field.ident;
+                tokens.push(quote! {
+                    self.#ident.to_abi_value(&#dyn_sol_type)?
+                });
+            }
         }
     }
 
-    Ok((match_arms, has_nonce))
+    Ok(tokens)
 }
 
 fn build_user_signed_action_impl(
     ident: &syn::Ident,
     action_type_lit: &syn::LitStr,
     types_lit: &syn::LitStr,
-    multisig_types_lit: &syn::LitStr,
-    multisig_params: &[(String, String)],
-    match_arms: &[TokenStream2],
+    struct_hash_tokens: &[TokenStream2],
+    multisig_hash_tokens: &[TokenStream2],
+    uses_time: bool,
 ) -> TokenStream2 {
-    let multisig_param_tokens: Vec<TokenStream2> = multisig_params
-        .iter()
-        .map(|(ty, name)| {
-            let ty_lit = LitStr::new(ty, proc_macro2::Span::call_site());
-            let name_lit = LitStr::new(name, proc_macro2::Span::call_site());
-            quote! { (#ty_lit, #name_lit) }
-        })
-        .collect();
-
     quote! {
-        impl crate::exchange::action_v2::UserSignedAction for #ident {
+        impl crate::actions::UserSignedAction for #ident {
             const ACTION_TYPE: &'static str = #action_type_lit;
 
-            fn struct_hash(&self, chain: &crate::SigningChain) -> alloy::primitives::B256 {
+            fn struct_hash(&self, chain: &crate::SigningChain) -> Result<alloy::primitives::B256, crate::Error> {
+                use crate::ToAbiValue;
                 let type_hash = alloy::primitives::keccak256(#types_lit);
-                let types_str = #types_lit;
-                let (_, params) = types_str
-                    .split_once(':')
-                    .expect("types must include prefix like HyperliquidTransaction:Struct(...)");
-                let params = params
-                    .split_once('(')
-                    .and_then(|(_, rest)| rest.strip_suffix(')'))
-                    .expect("types must include param list");
-
-                let mut values: Vec<alloy::dyn_abi::DynSolValue> =
-                    Vec::with_capacity(params.split(',').count() + 1);
-                values.push(alloy::dyn_abi::DynSolValue::FixedBytes(type_hash, 32));
-
-                for param in params.split(',') {
-                    let param = param.trim();
-                    if param.is_empty() {
-                        continue;
-                    }
-                    let mut parts = param.split_whitespace();
-                    let ty_str = parts.next().expect("param type missing");
-                    let name = parts.next().expect("param name missing");
-
-                    let parsed_ty: alloy::dyn_abi::DynSolType = ty_str
-                        .parse()
-                        .expect("failed to parse type in preimage");
-
-                    match name {
-                        "hyperliquidChain" => match parsed_ty {
-                            alloy::dyn_abi::DynSolType::String => values.push(
-                                alloy::dyn_abi::DynSolValue::FixedBytes(
-                                    alloy::primitives::keccak256(chain.get_hyperliquid_chain()),
-                                    32,
-                                ),
-                            ),
-                            _ => panic!("hyperliquidChain must be string"),
-                        },
-                        #(#match_arms,)*
-                        _ => panic!("unknown param in types preimage: {}", name),
-                    }
-                }
-
+                let values = vec![
+                    #(#struct_hash_tokens,)*
+                ];
                 let tuple = alloy::dyn_abi::DynSolValue::Tuple(values);
-                alloy::primitives::keccak256(tuple.abi_encode())
+                Ok(alloy::primitives::keccak256(tuple.abi_encode()))
             }
         }
 
-        impl crate::exchange::action_v2::Action for #ident {
-            fn action_type(&self) -> &'static str {
-                <Self as crate::exchange::action_v2::UserSignedAction>::ACTION_TYPE
+        impl crate::actions::Action for #ident {
+            const ACTION_TYPE: &'static str = <Self as crate::actions::UserSignedAction>::ACTION_TYPE;
+            const PAYLOAD_KEY: &'static str = <Self as crate::actions::UserSignedAction>::ACTION_TYPE;
+
+            fn is_user_signed() -> bool {
+                true
+            }
+
+            fn uses_time() -> bool {
+                #uses_time
             }
 
             fn signing_hash(
                 &self,
-                meta: &crate::exchange::action_v2::SigningMeta,
+                meta: &crate::actions::SigningMeta,
             ) -> Result<alloy::primitives::B256, crate::Error> {
-                Ok(<Self as crate::exchange::action_v2::UserSignedAction>::eip712_signing_hash(
+                <Self as crate::actions::UserSignedAction>::eip712_signing_hash(
                     self,
                     meta.signing_chain,
-                ))
+                )
             }
 
             fn multisig_signing_hash(
                 &self,
-                meta: &crate::exchange::action_v2::SigningMeta,
+                meta: &crate::actions::SigningMeta,
                 payload_multi_sig_user: alloy::primitives::Address,
                 outer_signer: alloy::primitives::Address,
             ) -> Result<alloy::primitives::B256, crate::Error> {
-                const MULTISIG_TYPES: &str = #multisig_types_lit;
-                const MULTISIG_PARAMS: &[(&str, &str)] = &[
-                    #(#multisig_param_tokens,)*
+                use crate::ToAbiValue;
+                let values = vec![
+                    #(#multisig_hash_tokens,)*
                 ];
-
-                let mut values: Vec<alloy::dyn_abi::DynSolValue> =
-                    Vec::with_capacity(MULTISIG_PARAMS.len() + 1);
-                values.push(alloy::dyn_abi::DynSolValue::FixedBytes(
-                    alloy::primitives::keccak256(MULTISIG_TYPES.as_bytes()),
-                    32,
-                ));
-
-                for (ty_str, name) in MULTISIG_PARAMS {
-                    let parsed_ty: alloy::dyn_abi::DynSolType = ty_str
-                        .parse()
-                        .expect("failed to parse type in preimage");
-
-                    match name {
-                        "hyperliquidChain" => match parsed_ty {
-                            alloy::dyn_abi::DynSolType::String => values.push(
-                                alloy::dyn_abi::DynSolValue::FixedBytes(
-                                    alloy::primitives::keccak256(
-                                        meta.signing_chain.get_hyperliquid_chain(),
-                                    ),
-                                    32,
-                                ),
-                            ),
-                            _ => panic!("hyperliquidChain must be string"),
-                        },
-                        "payloadMultiSigUser" => match parsed_ty {
-                            alloy::dyn_abi::DynSolType::Address => values.push(
-                                alloy::dyn_abi::DynSolValue::Address(payload_multi_sig_user),
-                            ),
-                            alloy::dyn_abi::DynSolType::String => values.push(
-                                alloy::dyn_abi::DynSolValue::FixedBytes(
-                                    alloy::primitives::keccak256(
-                                        payload_multi_sig_user.to_string().to_lowercase(),
-                                    ),
-                                    32,
-                                ),
-                            ),
-                            _ => panic!("payloadMultiSigUser must map to address or string type"),
-                        },
-                        "outerSigner" => match parsed_ty {
-                            alloy::dyn_abi::DynSolType::Address => values.push(
-                                alloy::dyn_abi::DynSolValue::Address(outer_signer),
-                            ),
-                            alloy::dyn_abi::DynSolType::String => values.push(
-                                alloy::dyn_abi::DynSolValue::FixedBytes(
-                                    alloy::primitives::keccak256(
-                                        outer_signer.to_string().to_lowercase(),
-                                    ),
-                                    32,
-                                ),
-                            ),
-                            _ => panic!("outerSigner must map to address or string type"),
-                        },
-                        #(#match_arms,)*
-                        _ => panic!("unknown param in types preimage: {}", name),
-                    }
-                }
 
                 let domain = alloy::sol_types::eip712_domain! {
                     name: "HyperliquidSignTransaction",
                     version: "1",
-                    chain_id: meta.signing_chain.signature_chain_id(),
+                    chain_id: meta.signing_chain.get_signature_chain_id(),
                     verifying_contract: alloy::primitives::Address::ZERO,
                 };
                 let domain_hash = domain.hash_struct();
@@ -290,8 +338,8 @@ fn build_user_signed_action_impl(
                 self.nonce
             }
 
-            fn extract_action_kind(&self) -> crate::exchange::action_v2::ActionKind {
-                crate::exchange::action_v2::ActionKind::#ident(self.clone())
+            fn extract_action_kind(&self) -> crate::actions::ActionKind {
+                crate::actions::ActionKind::#ident(self.clone())
             }
 
             fn with_nonce(mut self, nonce: u64) -> Self {
@@ -299,13 +347,18 @@ fn build_user_signed_action_impl(
                 self
             }
         }
+
     }
 }
 
 pub(crate) fn derive_user_signed_action(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
-    let (action_type_override, types_preimage) = match parse_action_attrs(&input.attrs) {
+    let ActionAttrs {
+        action_type_override,
+        types_preimage,
+        ..
+    } = match parse_action_attrs(&input.attrs) {
         Ok(parsed) => parsed,
         Err(err) => return err.to_compile_error().into(),
     };
@@ -331,16 +384,22 @@ pub(crate) fn derive_user_signed_action(input: TokenStream) -> TokenStream {
     let action_type_lit = LitStr::new(&action_type_value, ident.span());
     let types_lit = LitStr::new(&full_types_preimage, ident.span());
 
-    let (match_arms, has_nonce) = match build_user_signed_match_arms(fields) {
+    let parsed_params = match parse_types_params(&full_types_preimage) {
         Ok(result) => result,
         Err(err) => return err.to_compile_error().into(),
     };
+    let uses_time = parsed_params.iter().any(|(_, name)| name == "time");
 
-    let (multisig_types_preimage, multisig_params) =
-        match build_multisig_types(&full_types_preimage) {
+    let (struct_hash_tokens, has_nonce) =
+        match build_struct_hash_tokens(fields, &full_types_preimage) {
             Ok(result) => result,
             Err(err) => return err.to_compile_error().into(),
         };
+
+    let (multisig_types_preimage, _) = match build_multisig_types(&full_types_preimage) {
+        Ok(result) => result,
+        Err(err) => return err.to_compile_error().into(),
+    };
     let multisig_types_lit = LitStr::new(&multisig_types_preimage, ident.span());
 
     if !has_nonce {
@@ -352,15 +411,38 @@ pub(crate) fn derive_user_signed_action(input: TokenStream) -> TokenStream {
         .into();
     }
 
+    let multisig_hash_tokens =
+        match build_multisig_hash_tokens(fields, &multisig_types_preimage, &multisig_types_lit) {
+            Ok(result) => result,
+            Err(err) => return err.to_compile_error().into(),
+        };
+
     build_user_signed_action_impl(
         ident,
         &action_type_lit,
         &types_lit,
-        &multisig_types_lit,
-        &multisig_params,
-        &match_arms,
+        &struct_hash_tokens,
+        &multisig_hash_tokens,
+        uses_time,
     )
     .into()
+}
+
+fn parse_types_params(full_types_preimage: &str) -> Result<Vec<(String, String)>, syn::Error> {
+    let component = alloy_dyn_abi::eip712::parser::ComponentType::parse(full_types_preimage)
+        .map_err(|e| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("failed to parse types: {e}"),
+            )
+        })?;
+
+    let mut parsed_params: Vec<(String, String)> = Vec::new();
+    for prop in component.props {
+        parsed_params.push((prop.ty.stem().span().to_string(), prop.name.to_string()));
+    }
+
+    Ok(parsed_params)
 }
 
 fn build_multisig_types(
@@ -369,28 +451,11 @@ fn build_multisig_types(
     let (prefix, rest) = full_types_preimage
         .split_once(':')
         .ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "types missing ':'"))?;
-    let (struct_name, params) = rest.split_once('(').ok_or_else(|| {
-        syn::Error::new(proc_macro2::Span::call_site(), "types missing '('")
-    })?;
-    let params = params.strip_suffix(')').ok_or_else(|| {
-        syn::Error::new(proc_macro2::Span::call_site(), "types missing ')'")
-    })?;
+    let (struct_name, _) = rest
+        .split_once('(')
+        .ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "types missing '('"))?;
 
-    let mut parsed_params: Vec<(String, String)> = Vec::new();
-    for param in params.split(',') {
-        let param = param.trim();
-        if param.is_empty() {
-            continue;
-        }
-        let mut parts = param.split_whitespace();
-        let ty = parts
-            .next()
-            .ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "param type missing"))?;
-        let name = parts
-            .next()
-            .ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "param name missing"))?;
-        parsed_params.push((ty.to_string(), name.to_string()));
-    }
+    let parsed_params = parse_types_params(full_types_preimage)?;
 
     let mut multisig_params: Vec<(String, String)> = Vec::new();
     let mut enriched = false;

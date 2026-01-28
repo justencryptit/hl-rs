@@ -1,206 +1,134 @@
-use alloy::primitives::Address;
-use alloy_signer::Signature;
-use serde::{Deserialize, Serialize};
+// ============================================================================
+// Client (Prepare, Sign, Send)
+// ============================================================================
+
+use alloy::{primitives::Address, signers::local::PrivateKeySigner};
+use reqwest::Client;
+use serde::Serialize;
 
 use crate::{
-    exchange::{
-        builder::BuildAction,
-        client_builder::ExchangeClientBuilder,
-        requests::{ApproveAgent, HaltTrading, PerpDeploy, PerpDexSchemaInput, UsdSend},
-        types::{DexParams, RegisterAssetParams, SetOracleParams},
-        Action, ActionKind, SignedAction,
-    },
+    actions::{Action, SignedAction},
+    clients::exchange::responses::{ExchangeResponse, ExchangeResponseStatusRaw},
     http::HttpClient,
-    prelude::Result,
-    types::CoinToAsset,
-    utils::next_nonce,
-    BaseUrl,
+    BaseUrl, Error, PreparedAction,
 };
 
+/// Client for preparing, signing, and sending exchange actions.
+///
+/// # Example
+/// ```no_run
+/// use std::str::FromStr;
+///
+/// use alloy::primitives::Address;
+/// use alloy::signers::local::PrivateKeySigner;
+/// use hl_rs::{BaseUrl, ExchangeClientV2, UsdSend};
+/// use rust_decimal_macros::dec;
+///
+/// # async fn run() -> Result<(), hl_rs::Error> {
+/// let wallet =
+///     PrivateKeySigner::from_str("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+///         .expect("valid private key hex");
+/// let client = ExchangeClientV2::new(BaseUrl::Testnet).with_signer(wallet);
+///
+/// let action = UsdSend::new(Address::ZERO, dec!(1.0));
+///
+/// let _response = client.send_action(action).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Example (perpDeploy setSubDeployers)
+/// ```no_run
+/// use std::str::FromStr;
+///
+/// use alloy::primitives::Address;
+/// use alloy::signers::local::PrivateKeySigner;
+/// use hl_rs::{BaseUrl, ExchangeClientV2, SetSubDeployers, SubDeployer, SubDeployerVariant};
+///
+/// # async fn run() -> Result<(), hl_rs::Error> {
+/// let wallet =
+///     PrivateKeySigner::from_str("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+///         .expect("valid private key hex");
+/// let client = ExchangeClientV2::new(BaseUrl::Testnet).with_signer(wallet);
+///
+/// let sub_deployer = SubDeployer::enable(Address::ZERO, SubDeployerVariant::SetOracle);
+/// let action = SetSubDeployers::new("km", vec![sub_deployer]);
+/// let _response = client.send_action(action).await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct ExchangeClient {
-    pub(crate) base_url: BaseUrl,
-    pub(crate) http_client: HttpClient,
-    //pub(crate) meta: Option<Meta>,
-    pub(crate) vault_address: Option<Address>,
-    pub(crate) expires_after: Option<u64>,
-    pub(crate) coin_to_asset: Option<CoinToAsset>,
+    base_url: BaseUrl,
+    http_client: HttpClient,
+    vault_address: Option<Address>,
+    expires_after: Option<u64>,
+    signer_private_key: Option<PrivateKeySigner>,
 }
 
 impl ExchangeClient {
-    pub fn base_url(&self) -> &BaseUrl {
-        &self.base_url
-    }
-
-    pub fn set_url(&mut self, base_url: BaseUrl) {
-        self.base_url = base_url;
-        self.http_client.base_url = self.base_url.get_url();
-    }
-
-    pub fn builder(base_url: BaseUrl) -> ExchangeClientBuilder {
-        ExchangeClientBuilder::new(base_url)
-    }
-
-    pub fn approve_agent_action<T: Into<String>>(
-        &self,
-        agent_address: Address,
-        agent_name: T,
-    ) -> Result<Action> {
-        let approve_agent = ApproveAgent {
-            signature_chain_id: 421614,
-            hyperliquid_chain: self.hyperliquid_chain(),
-            agent_address,
-            agent_name: Some(agent_name.into()),
-            nonce: next_nonce(),
+    pub fn new(base_url: BaseUrl) -> Self {
+        let http_client = HttpClient {
+            client: Client::default(),
+            base_url: base_url.get_url(),
         };
 
-        ActionKind::ApproveAgent(approve_agent).build(self)
+        Self {
+            base_url,
+            http_client,
+            vault_address: None,
+            expires_after: None,
+            signer_private_key: None,
+        }
     }
 
-    pub fn usdc_transfer_action<T: Into<String>>(
-        &self,
-        amount: T,
-        destination: Address,
-    ) -> Result<Action> {
-        let usd_send = UsdSend {
-            signature_chain_id: 421614,
-            hyperliquid_chain: self.hyperliquid_chain(),
-            destination: destination.to_string(),
-            amount: amount.into(),
-            time: next_nonce(),
-        };
-
-        ActionKind::UsdSend(usd_send).build(self)
+    pub fn with_vault_address(mut self, vault_address: Address) -> Self {
+        self.vault_address = Some(vault_address);
+        self
     }
 
-    pub fn register_asset_on_new_dex(
-        &self,
-        dex_params: DexParams,
-        asset_params: RegisterAssetParams,
-    ) -> Result<Action> {
-        let dex_name = dex_params.full_name.to_owned();
-        self.register_asset(
-            asset_params.max_gas,
-            asset_params.ticker.as_str(),
-            asset_params.size_decimals,
-            asset_params.oracle_price,
-            asset_params.margin_table_id,
-            asset_params.only_isolated,
-            dex_name.as_str(),
-            Some(dex_params.into()),
+    pub fn with_expires_after(mut self, expires_after: u64) -> Self {
+        self.expires_after = Some(expires_after);
+        self
+    }
+    pub fn with_signer(mut self, signer_private_key: PrivateKeySigner) -> Self {
+        self.signer_private_key = Some(signer_private_key);
+        self
+    }
+
+    pub fn prepare_action<A: Action>(&self, action: A) -> Result<PreparedAction<A>, Error> {
+        PreparedAction::new(
+            action,
+            self.base_url.get_signing_chain(),
+            self.vault_address,
+            self.expires_after,
         )
     }
 
-    pub fn register_asset_on_existing_dex(
+    pub fn sign_action<A: Action>(
         &self,
-        dex_name: &str,
-        asset_params: RegisterAssetParams,
-    ) -> Result<Action> {
-        self.register_asset(
-            asset_params.max_gas,
-            asset_params.ticker.as_str(),
-            asset_params.size_decimals,
-            asset_params.oracle_price,
-            asset_params.margin_table_id,
-            asset_params.only_isolated,
-            dex_name,
-            None,
-        )
+        action: A,
+        wallet: &PrivateKeySigner,
+    ) -> Result<SignedAction<A>, Error> {
+        self.prepare_action(action)?.sign(wallet)
     }
 
-    fn register_asset(
+    pub async fn send_signed_action<A: Action + Serialize>(
         &self,
-        max_gas: Option<u64>,
-        coin: &str,
-        sz_decimals: u64,
-        oracle_px: f64,
-        margin_table_id: u64,
-        only_isolated: bool,
-        dex: &str,
-        schema: Option<PerpDexSchemaInput>,
-    ) -> Result<Action> {
-        use crate::exchange::{
-            requests::{PerpDeploy, RegisterAsset, RegisterAssetRequest},
-            ActionKind,
-        };
-
-        let register_asset_request = RegisterAssetRequest {
-            coin: coin.to_string(),
-            sz_decimals,
-            oracle_px: oracle_px.to_string(),
-            margin_table_id,
-            only_isolated,
-        };
-
-        let register_asset = RegisterAsset {
-            max_gas,
-            asset_request: register_asset_request,
-            dex: dex.to_string(),
-            schema,
-        };
-
-        ActionKind::PerpDeploy(PerpDeploy::RegisterAsset(register_asset)).build(self)
+        signed_action: SignedAction<A>,
+    ) -> Result<ExchangeResponse, Error> {
+        let output = self.http_client.post("/exchange", signed_action).await?;
+        let raw: ExchangeResponseStatusRaw =
+            serde_json::from_str(&output).map_err(|e| Error::JsonParse(e.to_string()))?;
+        raw.into_result()
     }
 
-    pub fn halt_trading_action<T: Into<String>>(&self, coin: T, is_halted: bool) -> Result<Action> {
-        let perp_deploy = ActionKind::PerpDeploy(PerpDeploy::HaltTrading(HaltTrading {
-            coin: coin.into(),
-            is_halted,
-        }));
-
-        perp_deploy.build(self)
-    }
-
-    pub fn set_oracle(&self, oracle_params: SetOracleParams) -> Result<Action> {
-        ActionKind::PerpDeploy(PerpDeploy::SetOracle(oracle_params.into())).build(self)
-    }
-
-    #[tracing::instrument(skip(self))]
-    pub async fn send_action(
+    pub async fn send_action<A: Action + Serialize>(
         &self,
-        signed_action: SignedAction,
-    ) -> Result<crate::exchange::responses::ExchangeResponse> {
-        let SignedAction {
-            action,
-            signature,
-            nonce,
-            ..
-        } = signed_action;
-        let exchange_payload = ExchangePayload {
-            action,
-            signature,
-            nonce,
-            vault_address: self.vault_address,
-            expires_after: self.expires_after,
-        };
-
-        tracing::debug!(target: "exchange_client", payload=?exchange_payload, "Sending payload");
-        let output = self.http_client.post("/exchange", exchange_payload).await?;
-        tracing::debug!(target: "exchange_client", res=output, "Exchange Response");
-
-        let raw_response: crate::exchange::responses::ExchangeResponseStatusRaw =
-            serde_json::from_str(&output).map_err(|e| {
-                tracing::error!(target: "exchange_client", error=?e, "Error parsing response");
-                crate::Error::JsonParse(e.to_string())
-            })?;
-
-        raw_response.into_result()
+        action: A,
+    ) -> Result<ExchangeResponse, Error> {
+        let prepared = self.prepare_action(action)?;
+        let signed = prepared.sign(self.signer_private_key.as_ref().unwrap())?;
+        self.send_signed_action(signed).await
     }
-
-    pub(crate) fn hyperliquid_chain(&self) -> String {
-        self.base_url.get_hyperliquid_chain()
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExchangePayload {
-    pub action: ActionKind,
-    #[serde(serialize_with = "crate::exchange::action::serialize_sig")]
-    pub signature: Signature,
-    pub nonce: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vault_address: Option<Address>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_after: Option<u64>,
 }

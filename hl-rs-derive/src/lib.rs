@@ -1,69 +1,68 @@
 extern crate proc_macro;
 
 use proc_macro::TokenStream;
-use syn::{
-    spanned::Spanned,
-    Attribute,
-    Data,
-    DeriveInput,
-    Expr,
-    Fields,
-    Lit,
-    Meta,
-    Token,
-};
+use syn::{spanned::Spanned, Attribute, Data, DeriveInput, Expr, Fields, Lit, Meta, Token};
 
 use syn::punctuated::Punctuated;
 
 mod l1_action;
 mod user_signed_action;
 
-pub(crate) fn parse_action_attrs(
-    attrs: &[Attribute],
-) -> Result<(Option<String>, Option<String>), syn::Error> {
-    let mut action_type_override = None;
-    let mut types_preimage = None;
+struct ActionAttrs {
+    action_type_override: Option<String>,
+    payload_key_override: Option<String>,
+    types_preimage: Option<String>,
+}
+pub(crate) fn parse_action_attrs(attrs: &[Attribute]) -> Result<ActionAttrs, syn::Error> {
+    let mut parsed = ActionAttrs {
+        action_type_override: None,
+        payload_key_override: None,
+        types_preimage: None,
+    };
 
     for attr in attrs {
         if attr.path().is_ident("action") {
             let args = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
             for meta in args {
-                if let Meta::NameValue(name_value) = meta {
-                    if name_value.path.is_ident("action_type") {
-                        let Expr::Lit(expr_lit) = name_value.value else {
+                let name_value = match meta {
+                    Meta::NameValue(name_value) => name_value,
+                    _ => continue,
+                };
+
+                if let Some(ident) = name_value.path.get_ident() {
+                    match ident.to_string().as_ref() {
+                        "action_type" => {
+                            parsed.action_type_override = Some(extract_lit_str(&name_value.value)?);
+                        }
+                        "payload_key" => {
+                            parsed.payload_key_override = Some(extract_lit_str(&name_value.value)?);
+                        }
+                        "types" => {
+                            parsed.types_preimage = Some(extract_lit_str(&name_value.value)?);
+                        }
+                        _ => {
                             return Err(syn::Error::new(
                                 name_value.span(),
-                                "action_type must be a string literal",
-                            ));
-                        };
-                        let Lit::Str(lit_str) = expr_lit.lit else {
-                            return Err(syn::Error::new(
-                                expr_lit.span(),
-                                "action_type must be a string literal",
-                            ));
-                        };
-                        action_type_override = Some(lit_str.value());
-                    } else if name_value.path.is_ident("types") {
-                        let Expr::Lit(expr_lit) = name_value.value else {
-                            return Err(syn::Error::new(
-                                name_value.span(),
-                                "types must be a string literal",
-                            ));
-                        };
-                        let Lit::Str(lit_str) = expr_lit.lit else {
-                            return Err(syn::Error::new(
-                                expr_lit.span(),
-                                "types must be a string literal",
-                            ));
-                        };
-                        types_preimage = Some(lit_str.value());
+                                "invalid action attribute",
+                            ))
+                        }
                     }
                 }
             }
         }
     }
+    Ok(parsed)
+}
 
-    Ok((action_type_override, types_preimage))
+fn extract_lit_str(expr_lit: &Expr) -> Result<String, syn::Error> {
+    let Expr::Lit(expr_lit) = expr_lit else {
+        return Err(syn::Error::new(expr_lit.span(), "must be a string literal"));
+    };
+    let Lit::Str(lit_str) = &expr_lit.lit else {
+        return Err(syn::Error::new(expr_lit.span(), "must be a string literal"));
+    };
+
+    Ok(lit_str.value())
 }
 
 pub(crate) fn ensure_struct_fields(input: &DeriveInput) -> Result<&Fields, syn::Error> {
@@ -85,7 +84,6 @@ pub(crate) fn ensure_named_fields(input: &DeriveInput) -> Result<&syn::FieldsNam
         )),
     }
 }
-
 
 #[proc_macro_derive(L1Action, attributes(action))]
 pub fn derive_l1_action(input: TokenStream) -> TokenStream {
