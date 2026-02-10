@@ -1,20 +1,20 @@
 use std::str::FromStr;
 
 use alloy::signers::local::PrivateKeySigner;
-use hl_rs::{BaseUrl, ExchangeClient, SetOpenInterestCaps};
+use hl_rs::{BaseUrl, ExchangeClient, ToggleTrading};
 
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().unwrap();
 
     let url = BaseUrl::Testnet;
-    let dex_name = "dddd";
+    let dex_name = "slob";
 
-    // Set open interest caps for multiple assets at once
-    // Caps must be at least max(1_000_000, half of current OI)
-    let action = SetOpenInterestCaps::new(dex_name, vec![
-        ("TSLA", 10_000_000 * 100_000),  // $10M cap for TSLA
-    ]);
+    // Resume (enable) trading for an asset
+    let action = ToggleTrading::halt(dex_name, "YAMS");
+
+    // To halt (disable) trading instead, use:
+    // let action = ToggleTrading::halt(dex_name, "TSLA");
 
     let private_key = std::env::var("PRIVATE_KEY").unwrap();
     let wallet = PrivateKeySigner::from_str(&private_key).unwrap();
@@ -24,5 +24,5 @@ async fn main() {
 
     let result = client.send_action(action).await.unwrap();
 
-    println!("Set OI caps result: {:?}", result);
+    println!("Toggle trading result: {:?}", result);
 }

@@ -1,7 +1,10 @@
 use std::str::FromStr;
 
 use alloy::signers::local::PrivateKeySigner;
-use hl_rs::{actions::RegisterAsset, AssetRequest, BaseUrl, ExchangeClient};
+use hl_rs::{
+    actions::{RegisterAsset, PerpDexSchema},
+    AssetRequest, BaseUrl, ExchangeClient,
+};
 use rust_decimal_macros::dec;
 
 #[tokio::main]

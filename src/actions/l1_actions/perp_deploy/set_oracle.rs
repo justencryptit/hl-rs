@@ -10,6 +10,7 @@ pub struct SetOracle {
     pub oracle_pxs: Vec<(String, String)>,
     pub mark_pxs: Vec<Vec<(String, String)>>,
     pub external_perp_pxs: Vec<(String, String)>,
+    #[serde(skip_serializing)]
     pub nonce: Option<u64>,
 }
 
@@ -29,7 +30,7 @@ impl Serialize for SetOracle {
         let mut external_perp_pxs = self.external_perp_pxs.clone();
         external_perp_pxs.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let mut state = serializer.serialize_struct("SetOracle", 5)?;
+        let mut state = serializer.serialize_struct("SetOracle", 4)?;
         state.serialize_field("dex", &self.dex)?;
         state.serialize_field("oraclePxs", &oracle_pxs)?;
         state.serialize_field("markPxs", &mark_pxs)?;

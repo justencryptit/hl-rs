@@ -38,25 +38,32 @@ rust_decimal = { version = "1.36.0", features = ["serde"] }
 rust_decimal_macros = "1.36.0"
 hl-rs-derive = { path = "hl-rs-derive" }
 
+# Perp deploy examples live in examples/perp_deploy/; paths are explicit
+# because Cargo only auto-discovers examples/*.rs at the top level.
+[[example]]
+name = "enable_growth_mode"
+path = "examples/perp_deploy/enable_growth_mode.rs"
+[[example]]
+name = "register_asset_existing_dex"
+path = "examples/perp_deploy/register_asset_existing_dex.rs"
+[[example]]
+name = "register_asset_new_dex"
+path = "examples/perp_deploy/register_asset_new_dex.rs"
+[[example]]
+name = "set_funding_interest_rates"
+path = "examples/perp_deploy/set_funding_interest_rates.rs"
+[[example]]
+name = "set_oi_caps"
+path = "examples/perp_deploy/set_oi_caps.rs"
+[[example]]
+name = "set_oracle"
+path = "examples/perp_deploy/set_oracle.rs"
+[[example]]
+name = "set_sub_deployers"
+path = "examples/perp_deploy/set_sub_deployers.rs"
+[[example]]
+name = "toggle_trading"
+path = "examples/perp_deploy/toggle_trading.rs"
+
 [workspace]
 members = ["hl-rs-derive"]
-
-[[example]]
-name = "perp-deploy-register-asset-existing-dex"
-path = "examples/perp-deploy-register-asset-existing-dex/src/main.rs"
-
-[[example]]
-name = "perp-deploy-enable-growth-mode"
-path = "examples/perp-deploy-enable-growth-mode/src/main.rs"
-
-[[example]]
-name = "perp-deploy-set-oi-caps"
-path = "examples/perp-deploy-set-oi-caps/src/main.rs"
-
-[[example]]
-name = "perp-deploy-set-funding-interest-rates"
-path = "examples/perp-deploy-set-funding-interest-rates/src/main.rs"
-
-[[example]]
-name = "perp-deploy-toggle-trading"
-path = "examples/perp-deploy-toggle-trading/src/main.rs"
