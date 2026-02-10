@@ -5,9 +5,7 @@
 use std::str::FromStr;
 
 use alloy::signers::local::PrivateKeySigner;
-use hl_rs::{
-    BatchOrder, BaseUrl, ExchangeClient, LimitOrderType, OrderType, OrderWire, Tif,
-};
+use hl_rs::{BaseUrl, BatchOrder, ExchangeClient, LimitOrderType, OrderType, OrderWire, Tif};
 use rust_decimal_macros::dec;
 
 #[tokio::main]
@@ -21,10 +19,10 @@ async fn main() {
 
     let order = OrderWire {
         a: asset,
-        b: false,  // buy
-        p: dec!(1),   // limit price
-        s: dec!(11.0),  // size
-        r: false, // not reduce-only
+        b: false,      // buy
+        p: dec!(1),    // limit price
+        s: dec!(11.0), // size
+        r: false,      // not reduce-only
         t: OrderType::Limit(LimitOrderType { tif: Tif::Gtc }),
         c: None,
     };

@@ -89,9 +89,9 @@ impl ExchangeResponse {
         if self.response_type != "order" {
             return None;
         }
-        self.data.as_ref().and_then(|v| {
-            serde_json::from_value(v.clone()).ok()
-        })
+        self.data
+            .as_ref()
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
     /// Messages array when `response_type` is `"setGlobal"` and `data` is `["msg1", "msg2", ...]`.

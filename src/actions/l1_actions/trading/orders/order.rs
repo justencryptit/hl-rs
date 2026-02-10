@@ -22,7 +22,10 @@ where
 {
     use serde::de::Error;
     let s = String::deserialize(deserializer)?;
-    s.trim().parse::<Decimal>().map_err(D::Error::custom).map(|d| d.normalize())
+    s.trim()
+        .parse::<Decimal>()
+        .map_err(D::Error::custom)
+        .map(|d| d.normalize())
 }
 
 /// Order type for limit orders with time-in-force.
@@ -119,7 +122,9 @@ impl<'de> Deserialize<'de> for OrderType {
                 } else if let Some(inner) = trigger {
                     Ok(OrderType::Trigger(inner))
                 } else {
-                    Err(de::Error::custom("order type must have \"limit\" or \"trigger\" key"))
+                    Err(de::Error::custom(
+                        "order type must have \"limit\" or \"trigger\" key",
+                    ))
                 }
             }
         }

@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use alloy::signers::local::PrivateKeySigner;
 use hl_rs::{
-    actions::{RegisterAsset, PerpDexSchema},
+    actions::{PerpDexSchema, RegisterAsset},
     AssetRequest, BaseUrl, ExchangeClient,
 };
 use rust_decimal_macros::dec;

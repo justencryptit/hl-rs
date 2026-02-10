@@ -14,10 +14,13 @@ async fn main() {
     // Option 1: Set 8-hour funding interest rates directly using Decimal
     // Rates must be between -0.01 and 0.01
     // NOTE: This is the baseline interest rate displayed if premium is 0 and funding scaling is 1
-    let _action_direct = SetFundingInterestRates::new(dex_name, vec![
-        ("TSLA", dec!(0.0001)),   // 0.01% 8-hour interest rate
-        ("ETH", dec!(-0.0001)),  // -0.01% 8-hour interest rate
-    ]);
+    let _action_direct = SetFundingInterestRates::new(
+        dex_name,
+        vec![
+            ("TSLA", dec!(0.0001)), // 0.01% 8-hour interest rate
+            ("ETH", dec!(-0.0001)), // -0.01% 8-hour interest rate
+        ],
+    );
 
     // Option 2: Set rate using target APY (more intuitive)
     // This converts a 5% APY to the corresponding 8-hour rate

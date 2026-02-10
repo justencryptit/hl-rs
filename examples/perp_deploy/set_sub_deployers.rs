@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use alloy::primitives::{Address, address};
+use alloy::primitives::{address, Address};
 use alloy::signers::local::PrivateKeySigner;
 use hl_rs::{BaseUrl, ExchangeClient, SetSubDeployers, SubDeployerVariant};
 
@@ -15,12 +15,8 @@ async fn main() {
     let sub_deployer_address = address!("0xEcC1e0731Ca1cbd237c0564935637c4c9e899e41");
 
     // Enable permissions for the sub-deployer (e.g. SetOracle, HaltTrading)
-    let action = SetSubDeployers::new(dex_name).enable_permissions(
-        sub_deployer_address,
-        vec![
-            SubDeployerVariant::HaltTrading,
-        ],
-    );
+    let action = SetSubDeployers::new(dex_name)
+        .enable_permissions(sub_deployer_address, vec![SubDeployerVariant::HaltTrading]);
 
     // To revoke permissions instead, use:
     // let action = SetSubDeployers::new(dex_name)

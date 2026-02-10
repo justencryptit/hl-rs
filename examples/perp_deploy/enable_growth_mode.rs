@@ -12,9 +12,12 @@ async fn main() {
 
     // Enable growth mode for specific assets
     // Growth mode status can only be changed once every 30 days
-    let action = SetGrowthModes::new(dex_name, vec![
-        ("TSLA", true),   // Enable growth mode for TSLA
-    ]);
+    let action = SetGrowthModes::new(
+        dex_name,
+        vec![
+            ("TSLA", true), // Enable growth mode for TSLA
+        ],
+    );
 
     let private_key = std::env::var("PRIVATE_KEY").unwrap();
     let wallet = PrivateKeySigner::from_str(&private_key).unwrap();
