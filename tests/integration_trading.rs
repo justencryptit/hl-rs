@@ -73,8 +73,8 @@ fn make_limit_order(asset: u32, is_buy: bool, price: &str, size: &str) -> OrderW
     OrderWire {
         a: asset,
         b: is_buy,
-        p: price.to_string(),
-        s: size.to_string(),
+        p: price.parse().unwrap(),
+        s: size.parse().unwrap(),
         r: false,
         t: OrderType::Limit(LimitOrderType { tif: Tif::Gtc }),
         c: None,
@@ -92,11 +92,11 @@ fn make_trigger_order(
     OrderWire {
         a: asset,
         b: is_buy,
-        p: price.to_string(),
-        s: size.to_string(),
+        p: price.parse().unwrap(),
+        s: size.parse().unwrap(),
         r: true, // Trigger orders are usually reduce-only
         t: OrderType::Trigger(TriggerOrderType {
-            trigger_px: trigger_px.to_string(),
+            trigger_px: trigger_px.parse().unwrap(),
             is_market: true,
             tpsl,
         }),

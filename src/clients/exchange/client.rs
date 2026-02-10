@@ -118,7 +118,6 @@ impl ExchangeClient {
         signed_action: SignedAction<A>,
     ) -> Result<ExchangeResponse, Error> {
         let output = self.http_client.post("/exchange", signed_action).await?;
-        println!("output: {}", output);
         let raw: ExchangeResponseStatusRaw =
             serde_json::from_str(&output).map_err(|e| Error::JsonParse(e.to_string()))?;
 

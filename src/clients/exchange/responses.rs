@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{error::ApiError, Error};
 
+/// Raw API response wrapper: status ok/err + response body.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "status", content = "response")]
 pub enum ExchangeResponseStatusRaw {
@@ -60,6 +61,11 @@ pub enum ExchangeDataStatus {
     WaitingForTrigger,
     Resting(RestingOrder),
     Filled(FilledOrder),
+    /// API returned an error for this order (e.g. insufficient balance)
+    Error(String),
+    /// Catch-all for unknown response variants
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -67,10 +73,39 @@ pub struct ExchangeDataStatuses {
     pub statuses: Vec<ExchangeDataStatus>,
 }
 
+/// Exchange API response. `data` is generic JSON so different action types
+/// (order, setGlobal, etc.) can return different structures without deserialization failures.
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ExchangeResponse {
     #[serde(rename = "type")]
     pub response_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<ExchangeDataStatuses>,
+    pub data: Option<serde_json::Value>,
+}
+
+impl ExchangeResponse {
+    /// Parsed order statuses when `response_type` is `"order"` and `data` has `statuses`.
+    pub fn order_data(&self) -> Option<ExchangeDataStatuses> {
+        if self.response_type != "order" {
+            return None;
+        }
+        self.data.as_ref().and_then(|v| {
+            serde_json::from_value(v.clone()).ok()
+        })
+    }
+
+    /// Messages array when `response_type` is `"setGlobal"` and `data` is `["msg1", "msg2", ...]`.
+    pub fn set_global_messages(&self) -> Option<Vec<String>> {
+        if self.response_type != "setGlobal" {
+            return None;
+        }
+        self.data.as_ref().and_then(|v| {
+            let arr = v.as_array()?;
+            let mut msgs = Vec::with_capacity(arr.len());
+            for item in arr {
+                msgs.push(item.as_str()?.to_string());
+            }
+            Some(msgs)
+        })
+    }
 }

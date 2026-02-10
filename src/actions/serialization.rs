@@ -35,22 +35,8 @@ impl<'a, T: Action + Serialize> Serialize for L1ActionWrapper<'a, T> {
             return map.end();
         }
 
-        // Flattened payload: {"type": "X", ...action fields...}
-        // Need to go through JSON to count and iterate fields
-        let payload = serde_json::to_value(self.action).map_err(S::Error::custom)?;
-        let payload_obj = payload
-            .as_object()
-            .cloned()
-            .ok_or_else(|| S::Error::custom("action payload must be object"))?;
-
-        let entry_count = 1 + payload_obj.len(); // "type" + flattened payload fields
-
-        let mut map = serializer.serialize_map(Some(entry_count))?;
-        map.serialize_entry("type", T::ACTION_TYPE)?;
-        for (key, value) in payload_obj {
-            map.serialize_entry(&key, &value)?;
-        }
-        map.end()
+        // Flattened payload: action produces full wire format {type, ...fields} with canonical key order
+        self.action.serialize(serializer)
     }
 }
 

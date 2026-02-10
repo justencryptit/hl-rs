@@ -59,7 +59,8 @@ pub(crate) fn compute_l1_hash<T: Serialize>(
     vault_address: Option<Address>,
     expires_after: Option<u64>,
 ) -> Result<B256, Error> {
-    let mut bytes = rmp_serde::to_vec_named(action).map_err(|e| Error::RmpParse(e.to_string()))?;
+    let mut bytes =
+        rmp_serde::to_vec_named(action).map_err(|e| Error::RmpParse(e.to_string()))?;
 
     bytes.extend(nonce.to_be_bytes());
 

@@ -40,8 +40,6 @@ fn build_l1_action_impl(
                         meta.vault_address
                     };
 
-
-
                 let wrapper = crate::actions::L1ActionWrapper { action: self };
                 let connection_id = crate::actions::compute_l1_hash(
                     &wrapper,
