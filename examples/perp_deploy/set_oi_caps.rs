@@ -9,13 +9,14 @@ async fn main() {
 
     let url = BaseUrl::Testnet;
     let dex_name = "dddd";
+    let oi_cap = 10_000_000; // $10M OI cap
 
     // Set open interest caps for multiple assets at once
     // Caps must be at least max(1_000_000, half of current OI)
     let action = SetOpenInterestCaps::new(
         dex_name,
         vec![
-            ("TSLA", 10_000_000 * 1_000_000), // $10M cap for TSLA
+            ("US500", oi_cap * 1_000_000),
         ],
     );
 
