@@ -1,7 +1,7 @@
 use reqwest::{Client, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::{prelude::Result, BaseUrl, Error};
+use crate::{prelude::Result, Error};
 
 #[derive(Deserialize, Debug)]
 struct ErrorData {
@@ -58,7 +58,6 @@ impl HttpClient {
     #[tracing::instrument(skip(self, data))]
     pub async fn post<T: Serialize>(&self, url_path: &'static str, data: T) -> Result<String> {
         let full_url = format!("{}{url_path}", self.base_url);
-        println!("Full URL: {}", full_url);
         // Serialize the payload for logging
         let payload_json =
             serde_json::to_string(&data).map_err(|e| Error::SerializationFailure(e.to_string()))?;
@@ -73,9 +72,5 @@ impl HttpClient {
             .map_err(|e| Error::GenericRequest(e.to_string()))?;
         tracing::trace!(target: "hl_rs::http_client", res=?res, "Raw Response");
         parse_response(res).await
-    }
-
-    pub fn is_mainnet(&self) -> bool {
-        self.base_url == BaseUrl::Mainnet.get_url()
     }
 }
