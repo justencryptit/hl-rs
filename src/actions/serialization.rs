@@ -179,7 +179,10 @@ impl<T: Action + Serialize> Serialize for SignedAction<T> {
     {
         let action_value =
             build_action_value(&self.action, self.signing_chain.as_ref()).map_err(Error::custom)?;
-        let mut state = serializer.serialize_struct("SignedAction", 5)?;
+        let field_count = 3
+            + self.vault_address.is_some() as usize
+            + self.expires_after.is_some() as usize;
+        let mut state = serializer.serialize_struct("SignedAction", field_count)?;
         state.serialize_field("action", &action_value)?;
         state.serialize_field("nonce", &self.nonce)?;
         state.serialize_field("signature", &SigSer(&self.signature))?;
