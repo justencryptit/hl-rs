@@ -37,28 +37,30 @@ impl<'a, T: Action + Serialize> Serialize for L1ActionWrapper<'a, T> {
         // Must match Python SDK's msgpack format exactly.
         //
         // Some actions (e.g. BatchOrder) have a custom Serialize that already
-        // includes "type". Others (e.g. UpdateLeverage) use derived Serialize
-        // which omits it. We normalize by converting to a serde_json::Value map,
-        // ensuring "type" is present, then serializing in the correct key order.
+        // includes "type" with canonical key order. Delegate directly to preserve it.
+        // Others (e.g. UpdateLeverage) use derived Serialize which omits "type".
+        // For those, we prepend "type" then serialize the remaining fields in order.
+        //
+        // serde_json is configured with `preserve_order` to maintain insertion order
+        // from the Serialize impl, which matches Python SDK's dict insertion order.
         let action_value = serde_json::to_value(self.action).map_err(Error::custom)?;
         let action_map = action_value
             .as_object()
             .ok_or_else(|| Error::custom("L1 action must serialize as a JSON object"))?;
 
-        let has_type = action_map.contains_key("type");
-        let extra = if has_type { 0 } else { 1 };
-        let mut map = serializer.serialize_map(Some(action_map.len() + extra))?;
-
-        // "type" must be the first key (canonical order for msgpack hash)
-        map.serialize_entry("type", T::ACTION_TYPE)?;
-
-        for (key, value) in action_map {
-            if key == "type" {
-                continue; // already written above
+        if action_map.contains_key("type") {
+            // Action already includes "type" with canonical key order — delegate directly
+            self.action.serialize(serializer)
+        } else {
+            // Action missing "type" — prepend it, then serialize fields in struct order.
+            // preserve_order ensures serde_json::Map retains Serialize field order.
+            let mut map = serializer.serialize_map(Some(action_map.len() + 1))?;
+            map.serialize_entry("type", T::ACTION_TYPE)?;
+            for (key, value) in action_map {
+                map.serialize_entry(key, value)?;
             }
-            map.serialize_entry(key, value)?;
+            map.end()
         }
-        map.end()
     }
 }
 
