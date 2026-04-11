@@ -179,16 +179,15 @@ impl<T: Action + Serialize> Serialize for SignedAction<T> {
     {
         let action_value =
             build_action_value(&self.action, self.signing_chain.as_ref()).map_err(Error::custom)?;
-        let field_count = 3
-            + self.vault_address.is_some() as usize
-            + self.expires_after.is_some() as usize;
+        // HL API requires vaultAddress to be explicitly null when not set.
+        // Omitting it causes 422 "Failed to deserialize the JSON body".
+        let field_count = 4 + self.expires_after.is_some() as usize;
         let mut state = serializer.serialize_struct("SignedAction", field_count)?;
         state.serialize_field("action", &action_value)?;
         state.serialize_field("nonce", &self.nonce)?;
         state.serialize_field("signature", &SigSer(&self.signature))?;
-        if let Some(vault_address) = &self.vault_address {
-            state.serialize_field("vaultAddress", vault_address)?;
-        }
+        // Always serialize vaultAddress — null when not set
+        state.serialize_field("vaultAddress", &self.vault_address)?;
         if let Some(expires_after) = &self.expires_after {
             state.serialize_field("expiresAfter", expires_after)?;
         }
