@@ -25,8 +25,6 @@ impl<'a, T: Action + Serialize> Serialize for L1ActionWrapper<'a, T> {
     where
         S: Serializer,
     {
-        // For nested payloads, we serialize the action directly to avoid
-        // serde_json::Value intermediary which produces different msgpack output
         if T::PAYLOAD_KEY != T::ACTION_TYPE {
             // Nested payload: {"type": "X", "payloadKey": {action fields}}
             let mut map = serializer.serialize_map(Some(2))?;
@@ -35,8 +33,32 @@ impl<'a, T: Action + Serialize> Serialize for L1ActionWrapper<'a, T> {
             return map.end();
         }
 
-        // Flattened payload: action produces full wire format {type, ...fields} with canonical key order
-        self.action.serialize(serializer)
+        // Flattened payload: {"type": "X", ...action fields...}
+        // Must match Python SDK's msgpack format exactly.
+        //
+        // Some actions (e.g. BatchOrder) have a custom Serialize that already
+        // includes "type". Others (e.g. UpdateLeverage) use derived Serialize
+        // which omits it. We normalize by converting to a serde_json::Value map,
+        // ensuring "type" is present, then serializing in the correct key order.
+        let action_value = serde_json::to_value(self.action).map_err(Error::custom)?;
+        let action_map = action_value
+            .as_object()
+            .ok_or_else(|| Error::custom("L1 action must serialize as a JSON object"))?;
+
+        let has_type = action_map.contains_key("type");
+        let extra = if has_type { 0 } else { 1 };
+        let mut map = serializer.serialize_map(Some(action_map.len() + extra))?;
+
+        // "type" must be the first key (canonical order for msgpack hash)
+        map.serialize_entry("type", T::ACTION_TYPE)?;
+
+        for (key, value) in action_map {
+            if key == "type" {
+                continue; // already written above
+            }
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
     }
 }
 
@@ -654,5 +676,58 @@ mod tests {
             }
             other => panic!("expected ActionKind::Unknown, got: {other:?}"),
         }
+    }
+
+    /// L1ActionWrapper must always include "type" in the msgpack hash for flattened actions.
+    /// Without this, the hash differs from Python SDK and signatures are invalid.
+    #[test]
+    fn test_l1_action_wrapper_includes_type_for_derived_serialize() {
+        use crate::actions::UpdateLeverage;
+
+        let action = UpdateLeverage::cross(4, 10);
+        let wrapper = L1ActionWrapper { action: &action };
+
+        // Serialize via serde_json to inspect the structure (same logic as msgpack)
+        let value = serde_json::to_value(&wrapper).unwrap();
+        let map = value.as_object().unwrap();
+
+        // Must have "type" field
+        assert_eq!(map.get("type").unwrap(), "updateLeverage");
+        // Must have the action fields
+        assert_eq!(map.get("asset").unwrap(), 4);
+        assert_eq!(map.get("isCross").unwrap(), true);
+        assert_eq!(map.get("leverage").unwrap(), 10);
+        // Should have 4 entries: type, asset, isCross, leverage
+        assert_eq!(map.len(), 4, "expected 4 fields in flattened wrapper");
+    }
+
+    /// BatchOrder already has custom Serialize with "type" — verify no duplication.
+    #[test]
+    fn test_l1_action_wrapper_no_duplicate_type_for_custom_serialize() {
+        use crate::actions::{BatchOrder, OrderWire, OrderType, LimitOrderType, Tif};
+        use rust_decimal_macros::dec;
+
+        let order = OrderWire {
+            a: 4,
+            b: true,
+            p: dec!(100.5),
+            s: dec!(0.01),
+            r: false,
+            t: OrderType::Limit(LimitOrderType { tif: Tif::Gtc }),
+            c: None,
+        };
+        let batch = BatchOrder::new(vec![order]);
+        let wrapper = L1ActionWrapper { action: &batch };
+
+        let value = serde_json::to_value(&wrapper).unwrap();
+        let map = value.as_object().unwrap();
+
+        // Must have "type" = "order"
+        assert_eq!(map.get("type").unwrap(), "order");
+        // Must have orders and grouping
+        assert!(map.get("orders").unwrap().is_array());
+        assert_eq!(map.get("grouping").unwrap(), "na");
+        // Should have 3 entries: type, orders, grouping (no builder)
+        assert_eq!(map.len(), 3, "expected 3 fields: type, orders, grouping");
     }
 }
